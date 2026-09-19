@@ -1,5 +1,5 @@
 #!/bin/bash
-#安装：curl -fsSL https://gitee.com/hxq886123/frp-onlykey/raw/master/frp0.sh -o frp0 && chmod +x frp0 && sudo mv frp0 /usr/local/bin/frp0 && frp0
+#安装：curl -fsSL https://raw.githubusercontent.com/hxq886/frpzh-INSTL/main/frpzh.sh -o frpzh && chmod +x frpzh && sudo mv frpzh /usr/local/bin/frpzh && frpzh
 # --- 基础配置 ---
 INSTALL_DIR_FRPS="/opt/frps"
 INSTALL_DIR_FRPC="/opt/frpc"
@@ -9,9 +9,21 @@ SERVICE_FRPS="frps.service"
 SERVICE_FRPC="frpc.service"
 
 # --- 下载地址配置 (方便修改) ---
-FRP_DOWNLOAD_URL_AMD64="https://github.com/hxq886/frpzh/releases/download/0.71.0/frp_0.71.0_linux_amd64.tar.gz"
-FRP_DOWNLOAD_URL_ARM64="https://github.com/hxq886/frpzh/releases/download/0.71.0/frp_0.71.0_linux_arm64.tar.gz"
-SCRIPT_UPDATE_URL="https://gitee.com/hxq886123/frp-onlykey/raw/master/frp0.sh" # 请替换为实际的脚本下载地址
+FRP_RELEASE_BASE="https://github.com/hxq886/frpzh/releases/download/0.71.0"
+FRP_DOWNLOAD_URL_AMD64="${FRP_RELEASE_BASE}/frp_0.71.0_linux_amd64.tar.gz"
+FRP_DOWNLOAD_URL_ARM64="${FRP_RELEASE_BASE}/frp_0.71.0_linux_arm64.tar.gz"
+SCRIPT_UPDATE_URL="https://raw.githubusercontent.com/hxq886/frpzh-INSTL/main/frpzh.sh"
+
+# GitHub 加速代理列表（国内服务器自动使用）
+GITHUB_PROXIES=(
+    "https://gh-proxy.com/"
+    "https://ghfast.top/"
+    "https://mirror.ghproxy.com/"
+)
+
+# 是否使用代理（脚本启动时自动检测）
+USE_PROXY=0
+PROXY_PREFIX=""
 
 
 # 颜色定义
@@ -20,15 +32,49 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# 检测服务器是否在国内，国内自动使用 GitHub 加速代理
+detect_region() {
+    echo -e "${YELLOW}正在检测服务器网络环境...${NC}"
+    local country=$(curl -s --max-time 5 https://ipinfo.io/country 2>/dev/null || echo "")
+    if [[ "$country" == "CN" ]]; then
+        USE_PROXY=1
+        # 测试第一个代理是否可用，不可用则换下一个
+        for proxy in "${GITHUB_PROXIES[@]}"; do
+            if curl -s --max-time 5 -o /dev/null "${proxy}https://raw.githubusercontent.com/torvalds/linux/master/README"; then
+                PROXY_PREFIX="$proxy"
+                echo -e "${GREEN}检测到国内服务器，将使用加速代理: ${PROXY_PREFIX}${NC}"
+                break
+            fi
+        done
+        if [[ -z "$PROXY_PREFIX" ]]; then
+            echo -e "${YELLOW}警告: 所有加速代理均不可用，将使用直连下载${NC}"
+            USE_PROXY=0
+        fi
+    else
+        USE_PROXY=0
+        echo -e "${GREEN}检测到海外服务器，使用 GitHub 直连${NC}"
+    fi
+}
+
+# 根据当前环境获取加速后的下载地址
+get_download_url() {
+    local original_url="$1"
+    if [[ $USE_PROXY -eq 1 ]]; then
+        echo "${PROXY_PREFIX}${original_url}"
+    else
+        echo "${original_url}"
+    fi
+}
+
 # 自动探测服务器架构，并选择对应类型的下载地址（结果存入 DOWNLOAD_URL）
 detect_arch() {
     ARCH=$(uname -m)
     case "$ARCH" in
         x86_64)
-            DOWNLOAD_URL="${FRP_DOWNLOAD_URL_AMD64}"
+            DOWNLOAD_URL=$(get_download_url "${FRP_DOWNLOAD_URL_AMD64}")
             ;;
         aarch64)
-            DOWNLOAD_URL="${FRP_DOWNLOAD_URL_ARM64}"
+            DOWNLOAD_URL=$(get_download_url "${FRP_DOWNLOAD_URL_ARM64}")
             ;;
         *)
             echo -e "${RED}暂不支持的架构: $ARCH${NC}"
@@ -43,6 +89,9 @@ if [[ $EUID -ne 0 ]]; then
    echo -e "${RED}错误: 请使用 sudo 运行此脚本${NC}"
    exit 1
 fi
+
+# 启动时自动检测服务器区域
+detect_region
 
 # ==================== FRPS 服务端模块 ====================
 
@@ -227,17 +276,20 @@ uninstall_all() {
 
 update_script() {
     echo -e "${YELLOW}--- 更新本脚本 ---${NC}"
-    echo "正在从 ${SCRIPT_UPDATE_URL} 下载最新版本..."
+    
+    # 获取加速后的脚本更新地址
+    local actual_script_url=$(get_download_url "${SCRIPT_UPDATE_URL}")
+    echo "正在从 ${actual_script_url} 下载最新版本..."
     
     # 优先使用 wget 进行下载，因为系统可能安装了 snap 版的 curl 导致权限受限无法写入系统目录
     # 如果没有 wget，再退回使用 curl，并将其下载到当前用户的 home 目录下
-    TMP_SCRIPT="$HOME/frp0_new.sh"
+    TMP_SCRIPT="$HOME/frpzh_new.sh"
     
     # 下载新脚本到临时文件
     if command -v wget >/dev/null 2>&1; then
-        DOWNLOAD_CMD="wget -qO ${TMP_SCRIPT} ${SCRIPT_UPDATE_URL}"
+        DOWNLOAD_CMD="wget -qO ${TMP_SCRIPT} ${actual_script_url}"
     else
-        DOWNLOAD_CMD="curl -L -s -o ${TMP_SCRIPT} ${SCRIPT_UPDATE_URL}"
+        DOWNLOAD_CMD="curl -L -s -o ${TMP_SCRIPT} ${actual_script_url}"
     fi
 
     if $DOWNLOAD_CMD; then
@@ -264,7 +316,7 @@ update_script() {
 while true; do
     clear
     echo -e "${GREEN}================================${NC}"
-    echo -e "${GREEN}    FRP0 综合管理工具 (frp0)    ${NC}"
+    echo -e "${GREEN}    FRPZH 综合管理工具 (frpzh)    ${NC}"
     echo -e "${GREEN}================================${NC}"
     echo -e "${YELLOW}[FRP Server 服务端]${NC}"
     echo "1. 安装/更新 FRPS 服务端"
